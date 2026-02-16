@@ -2,7 +2,6 @@
 import React, { useState, useEffect } from 'react';
 import { HashRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { User, UserRole, House } from './types';
-import { MOCK_USERS, MOCK_HOUSES } from './utils/mockData';
 import { db } from './services/firebase';
 
 // Pages & Components
@@ -35,16 +34,15 @@ const App: React.FC = () => {
     if (savedUser) setUser(JSON.parse(savedUser));
     if (savedHouse) setActiveHouse(JSON.parse(savedHouse));
 
-    // Polling de Sincronização Cross-Device (Real-Time)
-    // Verifica a nuvem a cada 10 segundos para garantir dados atualizados entre telemóvel e portátil
+    // Polling inteligente: Só altera o estado se houver mudança real na nuvem
     const syncInterval = setInterval(() => {
-      db.sync().then(updated => {
-        if (updated) {
-          setSyncKey(prev => prev + 1); // Força re-renderização dos componentes
-          console.log("Sistema Sincronizado com a Nuvem Água Mali");
+      db.sync().then(hasChanged => {
+        if (hasChanged) {
+          // Apenas dispara re-render se os dados mudarem de facto
+          setSyncKey(prev => prev + 1);
         }
       });
-    }, 10000);
+    }, 15000); // Aumentado para 15s para maior estabilidade visual
 
     return () => clearInterval(syncInterval);
   }, []);
