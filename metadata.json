@@ -1,0 +1,9 @@
+{
+  "name": "ÁGUA MALI - Sistema de Gestão de Água",
+  "description": "Plataforma completa para gestão de abastecimento de água no bairro Santa Isabel, Maputo. Inclui portal administrativo, leitor de contadores, gestão técnica de fugas e portal do cliente com faturas PDF e pagamentos.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "geolocation"
+  ]
+}
