@@ -18,15 +18,67 @@ const SYNC_URL = `https://${firebaseConfig.projectId}-default-rtdb.firebaseio.co
 export const db = {
   /**
    * Obtém dados locais (rápido) e tenta sincronizar com a nuvem
-   */: JSON.stringify({
-          houses: JSON.parse(localStorage.getItem('db_houses') || '[]'),
-          users: JSON.parse(localStorage.getItem('db_users') || '[]'),
-          readings: JSON.parse(localStorage.getItem('db_readings') || '[]'),
+   */
+  get: async (collection: string) => {
+    return JSON.parse(localStorage.getItem(`db_${collection}`) || '[]');
+  },
+
+  /**
+   * Grava dados localmente e faz o push imediato para a nuvem
+   */
+  save: async (collection: string, data: any) => {
+    try {
+      // 1. Gravação Local
+      const items = JSON.parse(localStorage.getItem(`db_${collection}`) || '[]');
+      
+      // Verifica se é uma atualização de array ou um item único
+      let updatedItems;
+      if (Array.isArray(data)) {
+        updatedItems = data; // Se for array, substitui completamente
+      } else {
+        // Se for um item único, verifica se já existe (atualiza) ou adiciona
+        const existingIndex = items.findIndex((item: any) => item.id === data.id);
+        if (existingIndex >= 0) {
+          items[existingIndex] = { ...items[existingIndex], ...data, updatedAt: Date.now() };
+          updatedItems = items;
+        } else {
+          updatedItems = [...items, { ...data, id: Date.now().toString(), createdAt: Date.now() }];
+        }
+      }
+      
+      localStorage.setItem(`db_${collection}`, JSON.stringify(updatedItems));
+
+      // 2. Sincronização Cross-Device (Push para Nuvem)
+      try {
+        // Buscar dados atuais da nuvem primeiro
+        const response = await fetch(SYNC_URL);
+        const cloudData = await response.json() || {};
+        
+        // Atualizar apenas a coleção específica
+        const updatedCloudData = {
+          ...cloudData,
+          [collection]: updatedItems,
           updatedAt: Date.now()
-        })
-      });
+        };
+        
+        // Enviar para a nuvem
+        await fetch(SYNC_URL, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(updatedCloudData)
+        });
+        
+        console.log(`✅ Dados sincronizados: ${collection}`);
+      } catch (error) {
+        console.warn("Falha na sincronização cloud:", error);
+      }
+      
+      return updatedItems;
     } catch (error) {
-      console.warn("Falha na sincronização cloud:", error);
+      console.error("Erro ao salvar dados:", error);
+      return null;
     }
   },
 
@@ -40,36 +92,62 @@ export const db = {
       
       if (cloudData) {
         // Atualiza o armazenamento local com os dados da nuvem
-        if (cloudData.houses) localStorage.setItem('db_houses', JSON.stringify(cloudData.houses));
-        if (cloudData.users) localStorage.setItem('db_users', JSON.stringify(cloudData.users));
-        if (cloudData.readings) localStorage.setItem('db_readings', JSON.stringify(cloudData.readings));
+        if (cloudData.houses) {
+          localStorage.setItem('db_houses', JSON.stringify(cloudData.houses));
+        }
+        if (cloudData.users) {
+          localStorage.setItem('db_users', JSON.stringify(cloudData.users));
+        }
+        if (cloudData.readings) {
+          localStorage.setItem('db_readings', JSON.stringify(cloudData.readings));
+        }
+        if (cloudData.orders) {
+          localStorage.setItem('db_orders', JSON.stringify(cloudData.orders));
+        }
         
         // Dispara evento para notificar componentes ativos
         window.dispatchEvent(new Event('sync-complete'));
+        console.log('✅ Sincronização concluída com sucesso');
         return true;
       }
     } catch (error) {
       console.error("Erro ao sincronizar dispositivos:", error);
     }
     return false;
-  }
-};
-  get: async (collection: string) => {
-    return JSON.parse(localStorage.getItem(`db_${collection}`) || '[]');
   },
 
   /**
-   * Grava dados localmente e faz o push imediato para a nuvem
+   * Remove dados do armazenamento local e da nuvem
    */
-  save: async (collection: string, data: any) => {
-    // 1. Gravação Local
-    const items = JSON.parse(localStorage.getItem(`db_${collection}`) || '[]');
-    // Verifica se é uma atualização de array ou um item único
-    const updatedItems = Array.isArray(data) ? data : [...items, data];
-    localStorage.setItem(`db_${collection}`, JSON.stringify(updatedItems));
-
-    // 2. Sincronização Cross-Device (Push para Nuvem)
+  remove: async (collection: string, id: string) => {
     try {
+      // Remover do localStorage
+      const items = JSON.parse(localStorage.getItem(`db_${collection}`) || '[]');
+      const updatedItems = items.filter((item: any) => item.id !== id);
+      localStorage.setItem(`db_${collection}`, JSON.stringify(updatedItems));
+      
+      // Sincronizar com a nuvem
+      const response = await fetch(SYNC_URL);
+      const cloudData = await response.json() || {};
+      
+      const updatedCloudData = {
+        ...cloudData,
+        [collection]: updatedItems,
+        updatedAt: Date.now()
+      };
+      
       await fetch(SYNC_URL, {
-        method: 'PUT', // Substitui o estado global na nuvem
-        body
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(updatedCloudData)
+      });
+      
+      return true;
+    } catch (error) {
+      console.error("Erro ao remover dados:", error);
+      return false;
+    }
+  }
+};
