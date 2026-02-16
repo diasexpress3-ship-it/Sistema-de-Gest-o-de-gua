@@ -7,6 +7,7 @@ import UserManagement from '../admin/UserManagement';
 import ReadingValidation from '../admin/ReadingValidation';
 import LeakManagement from '../admin/LeakManagement';
 import IssuanceManagement from '../admin/IssuanceManagement';
+import { db } from '../../services/firebase';
 import { 
   Camera, 
   MapPin, 
@@ -59,17 +60,20 @@ const ReaderDashboard: React.FC = () => {
   const SUPPORT_CONTACT = "843307646";
 
   useEffect(() => {
-    const storedHouses = localStorage.getItem('db_houses');
-    const allHouses = storedHouses ? JSON.parse(storedHouses) : MOCK_HOUSES;
-    setHouses(allHouses);
+    // Carrega dados da DB Central (Sincronizada)
+    db.get('houses').then(data => setHouses(data.length > 0 ? data : MOCK_HOUSES));
+    db.get('readings').then(data => setOfflineReadings(data));
 
-    const saved = localStorage.getItem('offline_readings');
-    if (saved) {
-      setOfflineReadings(JSON.parse(saved));
-    }
-    
     const savedTurno = localStorage.getItem('reader_turno_active');
     if (savedTurno) setTurnoActive(JSON.parse(savedTurno));
+
+    // Escuta eventos de sincronização externa (portátil -> telemóvel)
+    const handleSyncEvent = () => {
+      db.get('houses').then(data => setHouses(data));
+      db.get('readings').then(data => setOfflineReadings(data));
+    };
+    window.addEventListener('sync-complete', handleSyncEvent);
+    return () => window.removeEventListener('sync-complete', handleSyncEvent);
   }, []);
 
   useEffect(() => {
@@ -95,7 +99,7 @@ const ReaderDashboard: React.FC = () => {
     setCapturedPhoto(null);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ 
-        video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } } 
+        video: { facingMode: 'environment', width: { ideal: 1920 }, height: { ideal: 1080 } } 
       });
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
@@ -128,7 +132,7 @@ const ReaderDashboard: React.FC = () => {
     setReadingValue('');
   };
 
-  const handleSubmitReading = () => {
+  const handleSubmitReading = async () => {
     if (!readingValue) return alert("Por favor, insira o valor actual do contador.");
     
     const current = parseFloat(readingValue);
@@ -140,12 +144,9 @@ const ReaderDashboard: React.FC = () => {
       return;
     }
 
-    // CÁLCULOS FINANCEIROS REAIS (70 MZN/m3)
     const valorConsumo = consumption * PRICE_PER_M3;
-    const saldoAnterior = 0; // Pode ser dinâmico no futuro
-    const totalPagar = valorConsumo + saldoAnterior;
+    const totalPagar = valorConsumo;
     
-    // DATA LIMITE (10 DIAS)
     const dateLimit = new Date();
     dateLimit.setDate(dateLimit.getDate() + 10);
     const dateLimitStr = dateLimit.toLocaleDateString('pt-PT').replace(/\//g, '-');
@@ -166,13 +167,10 @@ const ReaderDashboard: React.FC = () => {
       photoUrl: capturedPhoto || undefined
     };
 
-    // Atualização de estados
+    // GRAVAÇÃO COM SINCRONIZAÇÃO CROSS-DEVICE (REAL-TIME)
     const updatedOffline = [newReading, ...offlineReadings];
     setOfflineReadings(updatedOffline);
-    localStorage.setItem('offline_readings', JSON.stringify(updatedOffline));
-
-    const updatedReadings = [newReading, ...JSON.parse(localStorage.getItem('db_readings') || '[]')];
-    localStorage.setItem('db_readings', JSON.stringify(updatedReadings));
+    await db.save('readings', updatedOffline);
 
     const updatedHouses = houses.map(h => 
       h.id === selectedHouse!.id 
@@ -180,9 +178,8 @@ const ReaderDashboard: React.FC = () => {
       : h
     );
     setHouses(updatedHouses);
-    localStorage.setItem('db_houses', JSON.stringify(updatedHouses));
+    await db.save('houses', updatedHouses);
 
-    // Dados para Notificação (TEMPLATE CLIENTE)
     setLastSubmittedReading({
       ...newReading,
       ownerName: selectedHouse!.ownerName,
@@ -190,7 +187,7 @@ const ReaderDashboard: React.FC = () => {
       meterId: selectedHouse!.meterId,
       period: `${currentMonthStr}/${currentYear}`,
       valorConsumo: valorConsumo.toFixed(2),
-      saldoAnterior: saldoAnterior.toFixed(2),
+      saldoAnterior: "0.00",
       totalPagar: totalPagar.toFixed(2),
       dataLimite: dateLimitStr
     });
@@ -217,17 +214,14 @@ const ReaderDashboard: React.FC = () => {
   const sendSMSAlert = () => {
     if (!lastSubmittedReading) return;
     const template = buildMessageTemplate();
-    // Simulação de gateway de SMS (em produção chamaria uma API como Twilio/Infobip)
-    alert(`SMS ENVIADO PARA: ${lastSubmittedReading.phoneNumber}\n\nCONTEÚDO:\n${template}\n\n(Enviado via Gateway SMS Água Mali - 2026)`);
+    alert(`SMS ENVIADO PARA: ${lastSubmittedReading.phoneNumber}\n\nCONTEÚDO:\n${template}`);
   };
 
-  const handleSync = () => {
-    if (offlineReadings.length === 0) return alert("Sem dados para sincronizar.");
+  const handleSync = async () => {
     setSyncing(true);
-    setTimeout(() => {
-      setSyncing(false);
-      alert("✓ SINCRONIZAÇÃO COMPLETA\nDados integrados na Nuvem Água Mali.");
-    }, 1500);
+    const success = await db.sync();
+    setSyncing(false);
+    if (success) alert("✓ SINCRONIZAÇÃO COMPLETA\nDados integrados na Nuvem Água Mali.");
   };
 
   const renderContent = () => {
@@ -282,7 +276,6 @@ const ReaderDashboard: React.FC = () => {
 
       {renderContent()}
 
-      {/* Pop-up de Confirmação e Envio Notificação */}
       {showSuccessModal && (
         <div className="fixed inset-0 bg-black/85 backdrop-blur-xl z-[200] flex items-center justify-center p-4 animate-in fade-in duration-300">
           <div className="bg-white w-full max-w-md rounded-[3.5rem] shadow-2xl overflow-hidden border-4 border-white animate-in zoom-in-95 duration-500">
@@ -291,16 +284,10 @@ const ReaderDashboard: React.FC = () => {
                 <Check className="w-10 h-10" />
               </div>
               <h3 className="text-2xl font-black">Leitura Gravada!</h3>
-              <p className="text-green-100 font-bold text-[10px] uppercase tracking-widest mt-2">Cálculo Real: {PRICE_PER_M3} MZN/m³</p>
             </div>
             
             <div className="p-8 space-y-6">
               <div className="bg-gray-50 p-6 rounded-[2.5rem] border-2 border-gray-100 space-y-3">
-                <div className="flex justify-between items-center">
-                  <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Subtotal Consumo</span>
-                  <span className="text-2xl font-black text-secondary">{lastSubmittedReading?.valorConsumo} MZN</span>
-                </div>
-                <div className="h-px bg-gray-200"></div>
                 <div className="flex justify-between items-center">
                   <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Total a Pagar</span>
                   <span className="text-2xl font-black text-red-600">{lastSubmittedReading?.totalPagar} MZN</span>
@@ -308,21 +295,18 @@ const ReaderDashboard: React.FC = () => {
               </div>
 
               <div className="space-y-3">
-                <p className="text-center text-[9px] font-black text-gray-400 uppercase tracking-widest">Enviar Fatura via:</p>
-                <div className="grid grid-cols-1 gap-3">
-                  <button 
-                    onClick={sendWhatsAppAlert}
-                    className="flex items-center justify-center bg-[#25D366] text-white py-5 rounded-[1.5rem] font-black text-[10px] tracking-widest uppercase hover:scale-105 transition-all shadow-lg"
-                  >
-                    <MessageCircle className="w-5 h-5 mr-3" /> WHATSAPP
-                  </button>
-                  <button 
-                    onClick={sendSMSAlert}
-                    className="flex items-center justify-center bg-secondary text-white py-5 rounded-[1.5rem] font-black text-[10px] tracking-widest uppercase hover:scale-105 transition-all shadow-lg"
-                  >
-                    <Smartphone className="w-5 h-5 mr-3" /> ENVIAR VIA SMS
-                  </button>
-                </div>
+                <button 
+                  onClick={sendWhatsAppAlert}
+                  className="w-full flex items-center justify-center bg-[#25D366] text-white py-5 rounded-[1.5rem] font-black text-[10px] tracking-widest uppercase shadow-lg"
+                >
+                  <MessageCircle className="w-5 h-5 mr-3" /> WHATSAPP
+                </button>
+                <button 
+                  onClick={sendSMSAlert}
+                  className="w-full flex items-center justify-center bg-secondary text-white py-5 rounded-[1.5rem] font-black text-[10px] tracking-widest uppercase shadow-lg"
+                >
+                  <Smartphone className="w-5 h-5 mr-3" /> ENVIAR SMS
+                </button>
               </div>
 
               <button 
@@ -336,7 +320,6 @@ const ReaderDashboard: React.FC = () => {
         </div>
       )}
 
-      {/* Reader Navigation */}
       <div className="fixed bottom-6 left-1/2 -translate-x-1/2 bg-white/95 backdrop-blur-xl border-2 border-gray-100 flex items-center justify-around px-6 py-4 z-50 shadow-[0_20px_60px_rgba(0,0,0,0.1)] rounded-[2.5rem] w-[95%] max-w-4xl overflow-x-auto no-scrollbar">
         <NavButton active={activeTab === 'dashboard'} onClick={() => { setActiveTab('dashboard'); setActiveStep('list'); }} icon={LayoutDashboard} label="Início" />
         <NavButton active={activeTab === 'houses'} onClick={() => setActiveTab('houses')} icon={Home} label="Casas" />
@@ -364,7 +347,7 @@ const DashboardView = ({ houses, onSelectHouse, pendingCount, turnoActive, onTog
     <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
       <div>
         <h2 className="text-4xl font-black text-secondary tracking-tight uppercase">Operação de Campo</h2>
-        <p className="text-gray-500 font-medium italic">Maputo - Santa Isabel | Fevereiro 2026</p>
+        <p className="text-gray-500 font-medium italic">Maputo - Santa Isabel | 2026</p>
       </div>
       <button 
         onClick={onToggleTurno}
@@ -381,7 +364,7 @@ const DashboardView = ({ houses, onSelectHouse, pendingCount, turnoActive, onTog
         <div className="relative z-10">
           <p className="text-blue-100 text-[10px] font-black uppercase tracking-widest mb-4 opacity-70">Dados Pendentes</p>
           <h3 className="text-4xl font-black mb-10 tracking-tighter">{pendingCount} Leituras p/ Enviar</h3>
-          <button onClick={onSync} disabled={syncing} className="bg-primary text-white px-10 py-5 rounded-2xl font-black text-[11px] uppercase tracking-widest shadow-xl flex items-center hover:scale-105 transition-all disabled:opacity-50">
+          <button onClick={onSync} disabled={syncing} className="bg-primary text-white px-10 py-5 rounded-2xl font-black text-[11px] uppercase tracking-widest shadow-xl flex items-center hover:scale-105 transition-all">
             {syncing ? <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin mr-3"></div> : <CloudUpload className="w-5 h-5 mr-3" />}
             SINCRONIZAR CLOUD
           </button>
@@ -403,7 +386,6 @@ const DashboardView = ({ houses, onSelectHouse, pendingCount, turnoActive, onTog
     <div className="space-y-6">
       <div className="flex items-center justify-between px-4">
         <h3 className="text-2xl font-black text-secondary uppercase tracking-tight">Clientes em Rota</h3>
-        <div className="bg-gray-100 px-6 py-2 rounded-xl text-[10px] font-black text-gray-400 uppercase tracking-widest">ID A106</div>
       </div>
       
       <div className="space-y-4">
@@ -436,41 +418,58 @@ const CaptureView = ({ house, onBack, readingValue, setReadingValue, isCameraAct
   const valorEstimado = consumoEstimado > 0 ? (consumoEstimado * pricePerM3).toFixed(2) : "0.00";
 
   return (
-    <div className="space-y-8 animate-in slide-in-from-right-10 duration-500">
+    <div className="space-y-6 animate-in slide-in-from-right-10 duration-500">
       <div className="flex items-center space-x-6">
-        <button onClick={onBack} className="p-5 bg-white border-2 border-gray-100 rounded-2xl text-gray-400 hover:text-secondary shadow-sm transition-all"><ArrowLeft className="w-6 h-6" /></button>
+        <button onClick={onBack} className="p-4 bg-white border-2 border-gray-100 rounded-2xl text-gray-400 hover:text-secondary shadow-sm transition-all"><ArrowLeft className="w-6 h-6" /></button>
         <div>
-          <h3 className="text-3xl font-black text-secondary tracking-tight">{house.ownerName}</h3>
+          <h3 className="text-2xl font-black text-secondary tracking-tight">{house.ownerName}</h3>
           <p className="text-[11px] font-black text-gray-400 uppercase tracking-widest">{house.id}</p>
         </div>
       </div>
 
-      <div className="bg-white p-6 md:p-10 rounded-[3rem] shadow-2xl border-4 border-white space-y-8">
-        <div className="relative aspect-video bg-gray-900 rounded-[2rem] overflow-hidden flex items-center justify-center border-4 border-gray-50 shadow-inner">
+      <div className="bg-white p-2 sm:p-4 rounded-[3rem] shadow-2xl border-4 border-white space-y-6 overflow-hidden">
+        {/* Melhoria UX: Câmara de Grande Dimensão para visualização clara do contador */}
+        <div className="relative h-[65vh] md:h-[500px] w-full bg-black rounded-[2.5rem] overflow-hidden flex items-center justify-center border-4 border-gray-50 shadow-inner group">
           {capturedPhoto ? (
             <img src={capturedPhoto} className="w-full h-full object-cover" alt="Contador" />
           ) : isCameraActive ? (
-            <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover"></video>
+            <video 
+              ref={videoRef} 
+              autoPlay 
+              playsInline 
+              muted 
+              className="w-full h-full object-cover"
+              style={{ objectFit: 'cover' }}
+            ></video>
           ) : (
-            <div className="text-white text-[10px] font-black uppercase tracking-[0.3em] animate-pulse">Aguardando Câmara...</div>
+            <div className="text-white text-[10px] font-black uppercase tracking-[0.3em] animate-pulse">Iniciando Câmara de Campo...</div>
           )}
 
-          <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center space-x-4 px-6 py-4 bg-black/60 backdrop-blur-2xl rounded-full border border-white/20 shadow-2xl">
-            <button onClick={(e) => { e.stopPropagation(); onUploadClick(); }} className="p-3 text-white hover:text-primary transition-all"><Upload className="w-5 h-5" /></button>
+          {/* Overlay de Controlos da Câmara */}
+          <div className="absolute bottom-10 left-1/2 -translate-x-1/2 flex items-center space-x-6 px-10 py-6 bg-black/40 backdrop-blur-3xl rounded-full border border-white/20 shadow-[0_20px_50px_rgba(0,0,0,0.5)] z-10">
+            <button onClick={(e) => { e.stopPropagation(); onUploadClick(); }} className="p-4 text-white hover:text-primary transition-all bg-white/10 rounded-full"><Upload className="w-6 h-6" /></button>
             {!capturedPhoto ? (
-              <button onClick={(e) => { e.stopPropagation(); captureSnapshot(); }} className="w-14 h-14 rounded-full border-4 border-white flex items-center justify-center bg-red-500 hover:scale-110 active:scale-90 transition-all shadow-xl">
-                <div className="w-6 h-6 bg-white rounded-full"></div>
+              <button 
+                onClick={(e) => { e.stopPropagation(); captureSnapshot(); }} 
+                className="w-20 h-20 rounded-full border-8 border-white flex items-center justify-center bg-red-600 hover:scale-110 active:scale-90 transition-all shadow-2xl"
+              >
+                <div className="w-8 h-8 bg-white rounded-full"></div>
               </button>
             ) : (
-              <div className="w-14 h-14 bg-green-500 rounded-full flex items-center justify-center text-white shadow-xl"><Check className="w-7 h-7" /></div>
+              <div className="w-20 h-20 bg-green-500 rounded-full flex items-center justify-center text-white shadow-2xl border-8 border-white/30"><Check className="w-10 h-10" /></div>
             )}
-            <button onClick={(e) => { e.stopPropagation(); setCapturedPhoto(null); }} className="p-3 text-white hover:text-red-400 transition-all"><X className="w-5 h-5" /></button>
+            <button onClick={(e) => { e.stopPropagation(); setCapturedPhoto(null); }} className="p-4 text-white hover:text-red-400 transition-all bg-white/10 rounded-full"><X className="w-6 h-6" /></button>
+          </div>
+          
+          <div className="absolute top-6 left-6 bg-primary/80 backdrop-blur-md text-white text-[9px] font-black px-4 py-1.5 rounded-full tracking-widest uppercase flex items-center">
+            <div className="w-2 h-2 bg-white rounded-full mr-2 animate-pulse"></div>
+            Modo de Captura HD
           </div>
         </div>
 
-        <div className="space-y-6">
-          <div className="bg-gray-50 p-8 rounded-[2.5rem] border-2 border-gray-100">
-            <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-4 text-center">Valor Actual do Contador (m³)</label>
+        <div className="px-4 pb-4 space-y-6">
+          <div className="bg-gray-50 p-8 rounded-[2.5rem] border-2 border-gray-100 relative">
+            <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-4 text-center">Inserir Valor do Contador (m³)</label>
             <input 
               type="number" 
               className="w-full bg-transparent border-none outline-none font-black text-6xl text-center text-secondary tracking-tighter placeholder:text-gray-200"
@@ -478,13 +477,13 @@ const CaptureView = ({ house, onBack, readingValue, setReadingValue, isCameraAct
               value={readingValue}
               onChange={(e) => setReadingValue(e.target.value)}
             />
-            <div className="mt-6 pt-6 border-t border-gray-200 flex justify-between items-center">
-              <div className="text-center flex-1 border-r border-gray-200">
-                <p className="text-[9px] font-black text-gray-400 uppercase mb-1">Anterior</p>
+            <div className="mt-6 pt-6 border-t border-gray-200 flex justify-between items-center text-center">
+              <div className="flex-1 border-r border-gray-200">
+                <p className="text-[9px] font-black text-gray-400 uppercase mb-1">Última L.</p>
                 <p className="font-black text-gray-600">{house.lastReading || 0} m³</p>
               </div>
-              <div className="text-center flex-1">
-                <p className="text-[9px] font-black text-primary uppercase mb-1">Cálculo 70 MZN</p>
+              <div className="flex-1">
+                <p className="text-[9px] font-black text-primary uppercase mb-1">Total MZN</p>
                 <p className="font-black text-primary text-xl">{valorEstimado} MZN</p>
               </div>
             </div>
@@ -495,7 +494,7 @@ const CaptureView = ({ house, onBack, readingValue, setReadingValue, isCameraAct
             className="w-full bg-primary text-white py-8 rounded-[2rem] font-black text-sm tracking-widest uppercase shadow-2xl hover:scale-[1.02] active:scale-95 transition-all border-4 border-white/20 flex items-center justify-center space-x-4"
           >
             <Send className="w-6 h-6" />
-            <span>GERAR FATURA & ENVIAR</span>
+            <span>CONFIRMAR & SINCRONIZAR</span>
           </button>
         </div>
       </div>
@@ -506,14 +505,13 @@ const CaptureView = ({ house, onBack, readingValue, setReadingValue, isCameraAct
 const HistoryView = ({ readings }: any) => (
   <div className="space-y-8 animate-in fade-in duration-500">
     <div className="flex justify-between items-center">
-      <h3 className="text-3xl font-black text-secondary tracking-tight uppercase">Histórico de Hoje</h3>
-      <div className="bg-primary/10 px-6 py-2 rounded-xl text-[10px] font-black text-primary uppercase tracking-widest">DEX-FIELD</div>
+      <h3 className="text-3xl font-black text-secondary tracking-tight uppercase">Histórico Local</h3>
     </div>
     <div className="space-y-4">
       {readings.length === 0 ? (
         <div className="py-24 bg-white rounded-[3rem] border-4 border-dashed border-gray-100 text-center flex flex-col items-center justify-center">
           <History className="w-16 h-16 text-gray-200 mb-6" />
-          <p className="text-gray-400 font-bold uppercase tracking-widest text-[10px]">Sem leituras registadas nesta sessão.</p>
+          <p className="text-gray-400 font-bold uppercase tracking-widest text-[10px]">Sem envios registados hoje.</p>
         </div>
       ) : readings.map((r: any) => (
         <div key={r.id} className="bg-white p-6 rounded-[2rem] shadow-xl border-2 border-gray-50 flex justify-between items-center group">
@@ -525,8 +523,7 @@ const HistoryView = ({ readings }: any) => (
             </div>
           </div>
           <div className="flex items-center space-x-3">
-             <span className="bg-blue-50 text-secondary text-[9px] font-black px-4 py-1.5 rounded-lg uppercase tracking-widest">SINCRONIZADO</span>
-             <button className="p-3 bg-gray-50 rounded-xl text-primary"><ArrowRight className="w-4 h-4" /></button>
+             <span className="bg-blue-50 text-secondary text-[9px] font-black px-4 py-1.5 rounded-lg uppercase tracking-widest">CLOUD SYNCED</span>
           </div>
         </div>
       ))}
