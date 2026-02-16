@@ -2,6 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import { House, UserRole } from '../../types';
 import { MOCK_HOUSES } from '../../utils/mockData';
+import { db } from '../../services/firebase';
 import { 
   Plus, Search, MoreVertical, Upload, CheckCircle, XCircle, Eye, Edit, Trash, X, Phone, User as UserIcon
 } from '../common/Icons';
@@ -32,78 +33,59 @@ const HouseManagement: React.FC = () => {
       setUserRole(user.role);
     }
 
-    const stored = localStorage.getItem('db_houses');
-    if (stored) {
-      setHouses(JSON.parse(stored));
-    } else {
-      setHouses(MOCK_HOUSES);
-      localStorage.setItem('db_houses', JSON.stringify(MOCK_HOUSES));
-    }
+    db.get('houses').then(data => {
+      setHouses(data.length > 0 ? data : MOCK_HOUSES);
+    });
+
+    const handleSync = () => {
+      db.get('houses').then(setHouses);
+    };
+    window.addEventListener('sync-complete', handleSync);
+    return () => window.removeEventListener('sync-complete', handleSync);
   }, []);
 
   const isAdmin = userRole === UserRole.ADMIN;
 
-  const saveToStorage = (updated: House[]) => {
-    if (!isAdmin) return;
-    setHouses(updated);
-    localStorage.setItem('db_houses', JSON.stringify(updated));
-  };
-
-  const toggleHouseStatus = (id: string) => {
-    if (!isAdmin) return alert("Apenas Administradores podem alterar o estado de ativação.");
-    const updated = houses.map(h => 
-      h.id === id ? { ...h, status: h.status === 'active' ? 'inactive' : 'active' } as House : h
-    );
-    saveToStorage(updated);
-  };
-
-  const deleteHouse = (id: string) => {
-    if (!isAdmin) return;
-    if (window.confirm('Tem certeza que deseja eliminar este cliente?')) {
-      const updated = houses.filter(h => h.id !== id);
-      saveToStorage(updated);
-      setActiveMenu(null);
-    }
-  };
-
-  const handleImport = () => {
-    if (!isAdmin) return;
-    const input = document.createElement('input');
-    input.type = 'file';
-    input.accept = '.xlsx, .xls, .csv';
-    input.onchange = (e: any) => {
-      const file = e.target.files[0];
-      alert(`Importação de ${file.name} iniciada...\nLendo ID, Proprietário, Contactos e Referência.`);
-      const newImport: House = {
-        id: `A106${Math.floor(Math.random() * 90000 + 10000)}`,
-        ownerName: 'Cliente Importado Excel',
-        phoneNumber: '840000000',
-        reference: 'Zona Importada via CSV',
-        meterId: 'CNT-IMP',
-        status: 'active',
-        password: 'welcome'
-      };
-      saveToStorage([...houses, newImport]);
-    };
-    input.click();
-  };
-
-  const handleFormSubmit = (e: React.FormEvent) => {
+  const handleFormSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!isAdmin) return;
+    
+    let updatedHouses: House[];
     if (isEditing) {
-      const updated = houses.map(h => h.id === isEditing.id ? { ...isEditing, ...formData } : h);
-      saveToStorage(updated);
+      updatedHouses = houses.map(h => h.id === isEditing.id ? { ...isEditing, ...formData } : h);
     } else {
       const newHouse: House = {
         ...formData,
         status: 'active'
       };
-      saveToStorage([...houses, newHouse]);
+      updatedHouses = [...houses, newHouse];
     }
+    
+    setHouses(updatedHouses);
+    await db.save('houses', updatedHouses); // Sincroniza com a nuvem (Resolve Mobile -> Laptop)
+    
     setShowModal(false);
     setIsEditing(null);
     setFormData({ id: '', ownerName: '', phoneNumber: '', secondaryPhone: '', reference: '', meterId: '', password: 'welcome' });
+  };
+
+  const toggleHouseStatus = async (id: string) => {
+    if (!isAdmin) return alert("Apenas Administradores podem alterar o estado de ativação.");
+    const updated = houses.map(h => 
+      h.id === id ? { ...h, status: h.status === 'active' ? 'inactive' : 'active' } as House : h
+    );
+    setHouses(updated);
+    await db.save('houses', updated);
+  };
+
+  const deleteHouse = async (id: string) => {
+    if (!isAdmin) return;
+    if (window.confirm('Tem certeza que deseja eliminar este cliente?')) {
+      const updated = houses.filter(h => h.id !== id);
+      setHouses(updated);
+      await db.save('houses', updated);
+      setActiveMenu(null);
+    }
   };
 
   const startEdit = (house: House) => {
@@ -138,13 +120,6 @@ const HouseManagement: React.FC = () => {
         {isAdmin && (
           <div className="flex flex-wrap gap-2">
             <button 
-              onClick={handleImport}
-              className="flex items-center bg-white border-2 border-gray-100 text-gray-700 px-5 py-3 rounded-2xl font-black text-sm hover:border-primary transition-all shadow-sm"
-            >
-              <Upload className="w-4 h-4 mr-2 text-primary" />
-              IMPORTAR
-            </button>
-            <button 
               onClick={() => { setIsEditing(null); setShowModal(true); }}
               className="flex items-center bg-primary text-white px-6 py-3 rounded-2xl font-black text-sm hover:scale-105 transition-all shadow-xl"
             >
@@ -167,11 +142,6 @@ const HouseManagement: React.FC = () => {
               onChange={(e) => setSearchTerm(e.target.value)}
             />
           </div>
-          <div className="flex items-center space-x-4">
-            <div className="px-4 py-2 bg-white rounded-xl border font-black text-[10px] text-gray-400 uppercase tracking-widest whitespace-nowrap">
-              Total Clientes: <span className="text-primary">{filteredHouses.length}</span>
-            </div>
-          </div>
         </div>
 
         <div className="overflow-x-auto">
@@ -181,7 +151,6 @@ const HouseManagement: React.FC = () => {
                 <th className="px-8 py-5">ID / Contador</th>
                 <th className="px-8 py-5">Proprietário</th>
                 <th className="px-8 py-5">Contactos</th>
-                <th className="px-8 py-5">Referência Manual</th>
                 <th className="px-8 py-5">Estado</th>
                 <th className="px-8 py-5 text-right">Ações</th>
               </tr>
@@ -189,7 +158,7 @@ const HouseManagement: React.FC = () => {
             <tbody className="divide-y divide-gray-50">
               {filteredHouses.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-8 py-20 text-center text-gray-400 italic">Nenhum cliente encontrado.</td>
+                  <td colSpan={5} className="px-8 py-20 text-center text-gray-400 italic">Nenhum cliente encontrado.</td>
                 </tr>
               ) : filteredHouses.map((house) => (
                 <tr key={house.id} className="hover:bg-blue-50/30 transition-colors group">
@@ -207,15 +176,7 @@ const HouseManagement: React.FC = () => {
                       <div className="flex items-center text-primary font-bold">
                         <Phone className="w-3 h-3 mr-1" /> {house.phoneNumber}
                       </div>
-                      {house.secondaryPhone && (
-                        <div className="text-xs text-gray-400 font-medium">{house.secondaryPhone}</div>
-                      )}
                     </div>
-                  </td>
-                  <td className="px-8 py-6 max-w-xs">
-                    <span className="text-sm text-gray-500 leading-relaxed block truncate" title={house.reference}>
-                      {house.reference}
-                    </span>
                   </td>
                   <td className="px-8 py-6">
                     <button 
@@ -225,13 +186,9 @@ const HouseManagement: React.FC = () => {
                         house.status === 'active' 
                         ? 'bg-green-100 text-green-700' 
                         : 'bg-red-100 text-red-700'
-                      } ${isAdmin ? 'hover:scale-105' : 'cursor-default opacity-80'}`}
+                      }`}
                     >
-                      {house.status === 'active' ? (
-                        <><CheckCircle className="w-3 h-3 mr-2" /> Ativo</>
-                      ) : (
-                        <><XCircle className="w-3 h-3 mr-2" /> Inativo</>
-                      )}
+                      {house.status === 'active' ? 'Ativo' : 'Inativo'}
                     </button>
                   </td>
                   <td className="px-8 py-6 text-right relative">
@@ -241,24 +198,14 @@ const HouseManagement: React.FC = () => {
                     >
                       <MoreVertical className="w-5 h-5 text-gray-400" />
                     </button>
-                    {activeMenu === house.id && (
-                      <div className="absolute right-16 top-0 w-48 bg-white shadow-2xl rounded-2xl border-2 border-gray-50 z-50 py-2 animate-in fade-in slide-in-from-right-2 duration-200">
-                        <button className="flex items-center w-full px-4 py-3 text-xs font-black text-gray-600 hover:bg-gray-50">
-                          <Eye className="w-4 h-4 mr-3 text-blue-500" /> HISTÓRICO
+                    {activeMenu === house.id && isAdmin && (
+                      <div className="absolute right-16 top-0 w-48 bg-white shadow-2xl rounded-2xl border-2 border-gray-50 z-50 py-2">
+                        <button onClick={() => startEdit(house)} className="flex items-center w-full px-4 py-3 text-xs font-black text-gray-600 hover:bg-gray-50">
+                          <Edit className="w-4 h-4 mr-3 text-orange-500" /> EDITAR
                         </button>
-                        
-                        {/* Only Admin can Edit/Delete */}
-                        {isAdmin && (
-                          <>
-                            <button onClick={() => startEdit(house)} className="flex items-center w-full px-4 py-3 text-xs font-black text-gray-600 hover:bg-gray-50">
-                              <Edit className="w-4 h-4 mr-3 text-orange-500" /> EDITAR
-                            </button>
-                            <div className="h-px bg-gray-50 my-1 mx-4"></div>
-                            <button onClick={() => deleteHouse(house.id)} className="flex items-center w-full px-4 py-3 text-xs font-black text-red-600 hover:bg-red-50">
-                              <Trash className="w-4 h-4 mr-3" /> ELIMINAR
-                            </button>
-                          </>
-                        )}
+                        <button onClick={() => deleteHouse(house.id)} className="flex items-center w-full px-4 py-3 text-xs font-black text-red-600 hover:bg-red-50">
+                          <Trash className="w-4 h-4 mr-3" /> ELIMINAR
+                        </button>
                       </div>
                     )}
                   </td>
@@ -269,126 +216,42 @@ const HouseManagement: React.FC = () => {
         </div>
       </div>
 
-      {/* House Modal (Admin Only) - Responsive Adjustments */}
       {showModal && isAdmin && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-md z-[100] flex items-center justify-center p-2 sm:p-4 overflow-hidden">
-          <div className="bg-white w-full max-w-3xl rounded-[2rem] sm:rounded-[2.5rem] shadow-2xl flex flex-col max-h-[95vh] animate-in zoom-in-95 duration-300 border-4 border-white/20">
-            {/* Modal Header */}
+          <div className="bg-white w-full max-w-3xl rounded-[2.5rem] shadow-2xl flex flex-col max-h-[95vh] animate-in zoom-in-95 duration-300">
             <div className="bg-primary p-6 sm:p-8 text-white flex justify-between items-center shrink-0">
-              <div>
-                <h2 className="text-xl sm:text-2xl font-black tracking-tight">{isEditing ? 'Editar Cliente' : 'Novo Cliente Água Mali'}</h2>
-                <p className="text-blue-100 text-[10px] sm:text-xs font-medium uppercase tracking-widest mt-1">Cadastro Santa Isabel</p>
-              </div>
-              <button onClick={() => setShowModal(false)} className="bg-white/10 p-2 rounded-full hover:bg-white/20 transition-all">
-                <X className="w-5 h-5 sm:w-6 sm:h-6" />
-              </button>
+              <h2 className="text-xl sm:text-2xl font-black">{isEditing ? 'Editar Cliente' : 'Novo Cliente'}</h2>
+              <button onClick={() => setShowModal(false)} className="bg-white/10 p-2 rounded-full"><X className="w-5 h-5" /></button>
             </div>
             
             <form onSubmit={handleFormSubmit} className="flex flex-col flex-1 overflow-hidden">
-              {/* Scrollable Modal Content */}
               <div className="p-6 sm:p-10 flex-1 overflow-y-auto space-y-6 sm:space-y-8 no-scrollbar">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6 sm:gap-8">
                   <div className="space-y-6">
                     <div>
-                      <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2">ID da Casa / Contrato</label>
-                      <input 
-                        type="text" 
-                        required
-                        placeholder="Ex: A106114"
-                        className="w-full px-5 py-4 bg-gray-50 border-2 border-transparent focus:border-secondary focus:bg-white rounded-2xl outline-none transition-all font-bold text-sm"
-                        value={formData.id}
-                        disabled={!!isEditing}
-                        onChange={(e) => setFormData({...formData, id: e.target.value})}
-                      />
+                      <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2">ID da Casa</label>
+                      <input type="text" required className="w-full px-5 py-4 bg-gray-50 border-2 border-transparent focus:border-secondary focus:bg-white rounded-2xl outline-none font-bold text-sm" value={formData.id} disabled={!!isEditing} onChange={(e) => setFormData({...formData, id: e.target.value})} />
                     </div>
                     <div>
-                      <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2">Proprietário Principal</label>
-                      <input 
-                        type="text" 
-                        required
-                        placeholder="Nome Completo"
-                        className="w-full px-5 py-4 bg-gray-50 border-2 border-transparent focus:border-secondary focus:bg-white rounded-2xl outline-none transition-all font-bold text-sm"
-                        value={formData.ownerName}
-                        onChange={(e) => setFormData({...formData, ownerName: e.target.value})}
-                      />
-                    </div>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                      <div>
-                        <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2">Telefone (1)</label>
-                        <input 
-                          type="text" 
-                          required
-                          placeholder="840000000"
-                          className="w-full px-5 py-4 bg-gray-50 border-2 border-transparent focus:border-secondary focus:bg-white rounded-2xl outline-none transition-all font-bold text-sm"
-                          value={formData.phoneNumber}
-                          onChange={(e) => setFormData({...formData, phoneNumber: e.target.value})}
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2">Telefone (2)</label>
-                        <input 
-                          type="text" 
-                          placeholder="Opcional"
-                          className="w-full px-5 py-4 bg-gray-50 border-2 border-transparent focus:border-secondary focus:bg-white rounded-2xl outline-none transition-all font-bold text-sm"
-                          value={formData.secondaryPhone}
-                          onChange={(e) => setFormData({...formData, secondaryPhone: e.target.value})}
-                        />
-                      </div>
+                      <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2">Nome Proprietário</label>
+                      <input type="text" required className="w-full px-5 py-4 bg-gray-50 border-2 border-transparent focus:border-secondary focus:bg-white rounded-2xl outline-none font-bold text-sm" value={formData.ownerName} onChange={(e) => setFormData({...formData, ownerName: e.target.value})} />
                     </div>
                   </div>
-
                   <div className="space-y-6">
                     <div>
-                      <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2">ID do Contador</label>
-                      <input 
-                        type="text" 
-                        required
-                        placeholder="Número de Série"
-                        className="w-full px-5 py-4 bg-gray-50 border-2 border-transparent focus:border-secondary focus:bg-white rounded-2xl outline-none transition-all font-bold text-sm"
-                        value={formData.meterId}
-                        onChange={(e) => setFormData({...formData, meterId: e.target.value})}
-                      />
+                      <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2">ID Contador</label>
+                      <input type="text" required className="w-full px-5 py-4 bg-gray-50 border-2 border-transparent focus:border-secondary focus:bg-white rounded-2xl outline-none font-bold text-sm" value={formData.meterId} onChange={(e) => setFormData({...formData, meterId: e.target.value})} />
                     </div>
                     <div>
-                      <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2">Referência de Localização</label>
-                      <textarea 
-                        rows={3} 
-                        required
-                        className="w-full px-5 py-4 bg-gray-50 border-2 border-transparent focus:border-secondary focus:bg-white rounded-2xl outline-none transition-all font-bold resize-none text-sm"
-                        placeholder="Ex: Entre a padaria e a paragem..."
-                        value={formData.reference}
-                        onChange={(e) => setFormData({...formData, reference: e.target.value})}
-                      ></textarea>
-                    </div>
-                    <div>
-                      <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2">Password do Portal</label>
-                      <input 
-                        type="text" 
-                        required
-                        className="w-full px-5 py-4 bg-gray-50 border-2 border-transparent focus:border-secondary focus:bg-white rounded-2xl outline-none transition-all font-bold text-sm"
-                        value={formData.password}
-                        onChange={(e) => setFormData({...formData, password: e.target.value})}
-                      />
+                      <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2">Telefone</label>
+                      <input type="text" required className="w-full px-5 py-4 bg-gray-50 border-2 border-transparent focus:border-secondary focus:bg-white rounded-2xl outline-none font-bold text-sm" value={formData.phoneNumber} onChange={(e) => setFormData({...formData, phoneNumber: e.target.value})} />
                     </div>
                   </div>
                 </div>
               </div>
-              
-              {/* Modal Footer (Sticky/Bottom) */}
               <div className="p-6 sm:p-10 bg-gray-50 flex flex-col sm:flex-row justify-end items-center gap-3 sm:gap-4 shrink-0 border-t">
-                <button 
-                  type="button" 
-                  onClick={() => setShowModal(false)} 
-                  className="w-full sm:w-auto px-8 py-4 rounded-2xl font-black text-gray-400 hover:bg-gray-200 transition-all uppercase tracking-widest text-[10px]"
-                >
-                  CANCELAR
-                </button>
-                <button 
-                  type="submit" 
-                  className="w-full sm:w-auto bg-primary text-white px-12 py-4 rounded-2xl font-black shadow-xl hover:scale-105 active:scale-95 transition-all uppercase tracking-widest text-[10px]"
-                >
-                  {isEditing ? 'ACTUALIZAR' : 'GUARDAR DADOS'}
-                </button>
+                <button type="button" onClick={() => setShowModal(false)} className="w-full sm:w-auto px-8 py-4 font-black text-gray-400 uppercase tracking-widest text-[10px]">CANCELAR</button>
+                <button type="submit" className="w-full sm:w-auto bg-primary text-white px-12 py-4 rounded-2xl font-black shadow-xl uppercase tracking-widest text-[10px]">GUARDAR DADOS</button>
               </div>
             </form>
           </div>
