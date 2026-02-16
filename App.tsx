@@ -3,6 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { HashRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { User, UserRole, House } from './types';
 import { MOCK_USERS, MOCK_HOUSES } from './utils/mockData';
+import { db } from './services/firebase';
 
 // Pages & Components
 import Login from './components/auth/Login';
@@ -26,12 +27,26 @@ import Layout from './components/layout/Layout';
 const App: React.FC = () => {
   const [user, setUser] = useState<User | null>(null);
   const [activeHouse, setActiveHouse] = useState<House | null>(null);
+  const [syncKey, setSyncKey] = useState(0);
 
   useEffect(() => {
     const savedUser = localStorage.getItem('auth_user');
     const savedHouse = localStorage.getItem('active_house');
     if (savedUser) setUser(JSON.parse(savedUser));
     if (savedHouse) setActiveHouse(JSON.parse(savedHouse));
+
+    // Polling de Sincronização Cross-Device (Real-Time)
+    // Verifica a nuvem a cada 10 segundos para garantir dados atualizados entre telemóvel e portátil
+    const syncInterval = setInterval(() => {
+      db.sync().then(updated => {
+        if (updated) {
+          setSyncKey(prev => prev + 1); // Força re-renderização dos componentes
+          console.log("Sistema Sincronizado com a Nuvem Água Mali");
+        }
+      });
+    }, 10000);
+
+    return () => clearInterval(syncInterval);
   }, []);
 
   const handleLogin = (u: User, house?: House) => {
@@ -55,7 +70,7 @@ const App: React.FC = () => {
   return (
     <Router>
       <Layout user={user} onLogout={handleLogout}>
-        <Routes>
+        <Routes key={syncKey}>
           {/* Admin Routes */}
           {user.role === UserRole.ADMIN && (
             <>
