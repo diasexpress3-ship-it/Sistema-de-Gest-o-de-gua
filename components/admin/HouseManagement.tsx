@@ -4,7 +4,7 @@ import { House, UserRole } from '../../types';
 import { MOCK_HOUSES } from '../../utils/mockData';
 import { db } from '../../services/firebase';
 import { 
-  Plus, Search, MoreVertical, Upload, CheckCircle, XCircle, Eye, Edit, Trash, X, Phone, User as UserIcon
+  Plus, Search, MoreVertical, Upload, CheckCircle, XCircle, Eye, Edit, Trash, X, Phone, User as UserIcon, Lock
 } from '../common/Icons';
 
 const HouseManagement: React.FC = () => {
@@ -15,7 +15,6 @@ const HouseManagement: React.FC = () => {
   const [activeMenu, setActiveMenu] = useState<string | null>(null);
   const [userRole, setUserRole] = useState<UserRole>(UserRole.CLIENTE);
 
-  // Form states
   const [formData, setFormData] = useState({
     id: '',
     ownerName: '',
@@ -29,16 +28,21 @@ const HouseManagement: React.FC = () => {
   useEffect(() => {
     const storedUser = localStorage.getItem('auth_user');
     if (storedUser) {
-      const user = JSON.parse(storedUser);
-      setUserRole(user.role);
+      setUserRole(JSON.parse(storedUser).role);
     }
 
+    // Carregar dados iniciais respeitando a persistência (não forçar Mocks se já houver sync)
     db.get('houses').then(data => {
-      setHouses(data.length > 0 ? data : MOCK_HOUSES);
+      if (data) {
+        setHouses(data);
+      } else {
+        setHouses(MOCK_HOUSES);
+        db.save('houses', MOCK_HOUSES);
+      }
     });
 
     const handleSync = () => {
-      db.get('houses').then(setHouses);
+      db.get('houses').then(data => { if (data) setHouses(data); });
     };
     window.addEventListener('sync-complete', handleSync);
     return () => window.removeEventListener('sync-complete', handleSync);
@@ -62,7 +66,7 @@ const HouseManagement: React.FC = () => {
     }
     
     setHouses(updatedHouses);
-    await db.save('houses', updatedHouses); // Sincroniza com a nuvem (Resolve Mobile -> Laptop)
+    await db.save('houses', updatedHouses);
     
     setShowModal(false);
     setIsEditing(null);
@@ -70,7 +74,7 @@ const HouseManagement: React.FC = () => {
   };
 
   const toggleHouseStatus = async (id: string) => {
-    if (!isAdmin) return alert("Apenas Administradores podem alterar o estado de ativação.");
+    if (!isAdmin) return alert("Apenas Administradores podem alterar o estado.");
     const updated = houses.map(h => 
       h.id === id ? { ...h, status: h.status === 'active' ? 'inactive' : 'active' } as House : h
     );
@@ -80,11 +84,13 @@ const HouseManagement: React.FC = () => {
 
   const deleteHouse = async (id: string) => {
     if (!isAdmin) return;
-    if (window.confirm('Tem certeza que deseja eliminar este cliente?')) {
+    if (window.confirm('Eliminar permanentemente este cliente e todos os seus dados?')) {
       const updated = houses.filter(h => h.id !== id);
       setHouses(updated);
+      // Aqui forçamos a gravação do array filtrado na cloud imediatamente
       await db.save('houses', updated);
       setActiveMenu(null);
+      alert("Cliente removido com sucesso de todos os dispositivos.");
     }
   };
 
@@ -113,31 +119,29 @@ const HouseManagement: React.FC = () => {
     <div className="space-y-6">
       <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
-          <h1 className="text-3xl font-black text-gray-900">Gestão de Casas / Clientes</h1>
-          <p className="text-gray-500">Base de dados centralizada - Santa Isabel 2026</p>
+          <h1 className="text-3xl font-black text-gray-900 tracking-tight">Gestão de Casas / Clientes</h1>
+          <p className="text-gray-500 font-medium italic">Base de Dados Cloud Sincronizada 2026</p>
         </div>
         
         {isAdmin && (
-          <div className="flex flex-wrap gap-2">
-            <button 
-              onClick={() => { setIsEditing(null); setShowModal(true); }}
-              className="flex items-center bg-primary text-white px-6 py-3 rounded-2xl font-black text-sm hover:scale-105 transition-all shadow-xl"
-            >
-              <Plus className="w-4 h-4 mr-2" />
-              NOVA CASA
-            </button>
-          </div>
+          <button 
+            onClick={() => { setIsEditing(null); setShowModal(true); }}
+            className="flex items-center bg-primary text-white px-8 py-4 rounded-[1.5rem] font-black text-sm hover:scale-105 transition-all shadow-xl shadow-orange-100"
+          >
+            <Plus className="w-5 h-5 mr-3" />
+            NOVA CASA
+          </button>
         )}
       </div>
 
-      <div className="bg-white rounded-[2rem] shadow-xl border-2 border-gray-50 overflow-hidden">
-        <div className="p-6 border-b flex flex-col md:flex-row gap-4 justify-between items-center bg-gray-50/30">
-          <div className="relative w-full md:w-[30rem]">
-            <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-300 w-5 h-5" />
+      <div className="bg-white rounded-[2.5rem] shadow-xl border-2 border-gray-50 overflow-hidden">
+        <div className="p-8 border-b flex flex-col md:flex-row gap-6 justify-between items-center bg-gray-50/30">
+          <div className="relative w-full md:w-[35rem]">
+            <Search className="absolute left-5 top-1/2 -translate-y-1/2 text-gray-300 w-5 h-5" />
             <input 
               type="text" 
-              placeholder="Pesquisar por Nome ou ID A106..." 
-              className="w-full pl-12 pr-6 py-3.5 border-2 border-gray-100 rounded-2xl outline-none focus:border-secondary transition-all font-medium text-sm"
+              placeholder="Pesquisar por Nome, ID ou Contador..." 
+              className="w-full pl-14 pr-6 py-4 border-2 border-gray-100 rounded-2xl outline-none focus:border-secondary transition-all font-bold text-sm bg-white"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
             />
@@ -148,63 +152,62 @@ const HouseManagement: React.FC = () => {
           <table className="w-full text-left">
             <thead>
               <tr className="bg-white border-b text-gray-400 text-[10px] font-black uppercase tracking-[0.2em]">
-                <th className="px-8 py-5">ID / Contador</th>
-                <th className="px-8 py-5">Proprietário</th>
-                <th className="px-8 py-5">Contactos</th>
-                <th className="px-8 py-5">Estado</th>
-                <th className="px-8 py-5 text-right">Ações</th>
+                <th className="px-10 py-6">Identificação</th>
+                <th className="px-10 py-6">Proprietário</th>
+                <th className="px-10 py-6">Contacto</th>
+                <th className="px-10 py-6">Estado</th>
+                <th className="px-10 py-6 text-right">Acções</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">
               {filteredHouses.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="px-8 py-20 text-center text-gray-400 italic">Nenhum cliente encontrado.</td>
+                  <td colSpan={5} className="px-10 py-24 text-center text-gray-400 font-medium italic">Nenhum registo ativo encontrado.</td>
                 </tr>
               ) : filteredHouses.map((house) => (
-                <tr key={house.id} className="hover:bg-blue-50/30 transition-colors group">
-                  <td className="px-8 py-6">
+                <tr key={house.id} className="hover:bg-blue-50/30 transition-all group">
+                  <td className="px-10 py-7">
                     <div className="flex flex-col">
-                      <span className="font-black text-gray-900 text-lg">{house.id}</span>
-                      <span className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">{house.meterId}</span>
+                      <span className="font-black text-secondary text-lg leading-none mb-1">{house.id}</span>
+                      <span className="text-[10px] text-gray-400 font-bold uppercase tracking-widest">{house.meterId}</span>
                     </div>
                   </td>
-                  <td className="px-8 py-6">
-                    <span className="font-bold text-gray-800">{house.ownerName}</span>
+                  <td className="px-10 py-7">
+                    <span className="font-black text-gray-800">{house.ownerName}</span>
                   </td>
-                  <td className="px-8 py-6">
-                    <div className="flex flex-col text-sm">
-                      <div className="flex items-center text-primary font-bold">
-                        <Phone className="w-3 h-3 mr-1" /> {house.phoneNumber}
-                      </div>
+                  <td className="px-10 py-7">
+                    <div className="flex items-center text-sm font-bold text-primary">
+                      <Phone className="w-4 h-4 mr-2" /> {house.phoneNumber}
                     </div>
                   </td>
-                  <td className="px-8 py-6">
+                  <td className="px-10 py-7">
                     <button 
                       onClick={() => toggleHouseStatus(house.id)}
                       disabled={!isAdmin}
-                      className={`inline-flex items-center px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest transition-all ${
+                      className={`inline-flex items-center px-5 py-2 rounded-full text-[10px] font-black uppercase tracking-widest transition-all ${
                         house.status === 'active' 
-                        ? 'bg-green-100 text-green-700' 
-                        : 'bg-red-100 text-red-700'
+                        ? 'bg-green-100 text-green-700 hover:bg-green-200' 
+                        : 'bg-red-100 text-red-700 hover:bg-red-200'
                       }`}
                     >
-                      {house.status === 'active' ? 'Ativo' : 'Inativo'}
+                      {house.status === 'active' ? '● Activo' : '○ Inativo'}
                     </button>
                   </td>
-                  <td className="px-8 py-6 text-right relative">
+                  <td className="px-10 py-7 text-right relative">
                     <button 
                       onClick={() => setActiveMenu(activeMenu === house.id ? null : house.id)}
-                      className="p-2 hover:bg-white rounded-xl border border-transparent hover:border-gray-200 transition-all shadow-sm"
+                      className="p-3 hover:bg-white rounded-xl border-2 border-transparent hover:border-gray-100 transition-all"
                     >
                       <MoreVertical className="w-5 h-5 text-gray-400" />
                     </button>
                     {activeMenu === house.id && isAdmin && (
-                      <div className="absolute right-16 top-0 w-48 bg-white shadow-2xl rounded-2xl border-2 border-gray-50 z-50 py-2">
-                        <button onClick={() => startEdit(house)} className="flex items-center w-full px-4 py-3 text-xs font-black text-gray-600 hover:bg-gray-50">
-                          <Edit className="w-4 h-4 mr-3 text-orange-500" /> EDITAR
+                      <div className="absolute right-20 top-0 w-52 bg-white shadow-2xl rounded-2xl border-2 border-gray-50 z-50 py-3 animate-in fade-in slide-in-from-right-4 duration-200">
+                        <button onClick={() => startEdit(house)} className="flex items-center w-full px-5 py-3 text-xs font-black text-gray-600 hover:bg-gray-50 transition-colors">
+                          <Edit className="w-4 h-4 mr-3 text-orange-500" /> EDITAR DADOS
                         </button>
-                        <button onClick={() => deleteHouse(house.id)} className="flex items-center w-full px-4 py-3 text-xs font-black text-red-600 hover:bg-red-50">
-                          <Trash className="w-4 h-4 mr-3" /> ELIMINAR
+                        <div className="h-px bg-gray-50 my-2 mx-4"></div>
+                        <button onClick={() => deleteHouse(house.id)} className="flex items-center w-full px-5 py-3 text-xs font-black text-red-600 hover:bg-red-50 transition-colors">
+                          <Trash className="w-4 h-4 mr-3" /> ELIMINAR CLIENTE
                         </button>
                       </div>
                     )}
@@ -217,41 +220,67 @@ const HouseManagement: React.FC = () => {
       </div>
 
       {showModal && isAdmin && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-md z-[100] flex items-center justify-center p-2 sm:p-4 overflow-hidden">
-          <div className="bg-white w-full max-w-3xl rounded-[2.5rem] shadow-2xl flex flex-col max-h-[95vh] animate-in zoom-in-95 duration-300">
-            <div className="bg-primary p-6 sm:p-8 text-white flex justify-between items-center shrink-0">
-              <h2 className="text-xl sm:text-2xl font-black">{isEditing ? 'Editar Cliente' : 'Novo Cliente'}</h2>
-              <button onClick={() => setShowModal(false)} className="bg-white/10 p-2 rounded-full"><X className="w-5 h-5" /></button>
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-md z-[100] flex items-center justify-center p-2 sm:p-4 overflow-hidden animate-in fade-in duration-300">
+          <div className="bg-white w-full max-w-3xl rounded-[3rem] shadow-2xl flex flex-col max-h-[95vh] animate-in zoom-in-95 duration-300 border-4 border-white">
+            <div className="bg-secondary p-8 sm:p-10 text-white flex justify-between items-center shrink-0 rounded-t-[2.7rem]">
+              <div>
+                <h2 className="text-2xl sm:text-3xl font-black tracking-tight">{isEditing ? 'Editar Registo' : 'Novo Cliente / Casa'}</h2>
+                <p className="text-blue-100 text-xs font-bold uppercase tracking-[0.2em] mt-1">Configuração de Acesso e Infraestrutura</p>
+              </div>
+              <button onClick={() => setShowModal(false)} className="bg-white/10 p-3 rounded-full hover:bg-white/20 transition-all">
+                <X className="w-6 h-6" />
+              </button>
             </div>
             
             <form onSubmit={handleFormSubmit} className="flex flex-col flex-1 overflow-hidden">
-              <div className="p-6 sm:p-10 flex-1 overflow-y-auto space-y-6 sm:space-y-8 no-scrollbar">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 sm:gap-8">
-                  <div className="space-y-6">
+              <div className="p-8 sm:p-12 flex-1 overflow-y-auto space-y-8 no-scrollbar">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-8 sm:gap-10">
+                  <div className="space-y-8">
                     <div>
-                      <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2">ID da Casa</label>
-                      <input type="text" required className="w-full px-5 py-4 bg-gray-50 border-2 border-transparent focus:border-secondary focus:bg-white rounded-2xl outline-none font-bold text-sm" value={formData.id} disabled={!!isEditing} onChange={(e) => setFormData({...formData, id: e.target.value})} />
+                      <label className="block text-[11px] font-black text-gray-400 uppercase tracking-widest mb-3 px-2">ID do Contrato / Casa</label>
+                      <input type="text" required placeholder="Ex: A113" className="w-full px-6 py-5 bg-gray-50 border-2 border-transparent focus:border-secondary focus:bg-white rounded-[1.5rem] outline-none font-black text-secondary transition-all" value={formData.id} disabled={!!isEditing} onChange={(e) => setFormData({...formData, id: e.target.value})} />
                     </div>
                     <div>
-                      <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2">Nome Proprietário</label>
-                      <input type="text" required className="w-full px-5 py-4 bg-gray-50 border-2 border-transparent focus:border-secondary focus:bg-white rounded-2xl outline-none font-bold text-sm" value={formData.ownerName} onChange={(e) => setFormData({...formData, ownerName: e.target.value})} />
+                      <label className="block text-[11px] font-black text-gray-400 uppercase tracking-widest mb-3 px-2">Nome do Proprietário Principal</label>
+                      <input type="text" required placeholder="Nome Completo" className="w-full px-6 py-5 bg-gray-50 border-2 border-transparent focus:border-secondary focus:bg-white rounded-[1.5rem] outline-none font-bold text-gray-700 transition-all" value={formData.ownerName} onChange={(e) => setFormData({...formData, ownerName: e.target.value})} />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-black text-gray-400 uppercase tracking-widest mb-3 px-2">Palavra-Passe de Acesso (Portal)</label>
+                      <div className="relative group">
+                        <Lock className="absolute left-5 top-1/2 -translate-y-1/2 text-gray-300 w-5 h-5 group-focus-within:text-primary transition-colors" />
+                        <input 
+                          type="text" 
+                          required 
+                          placeholder="Ex: Welcome2026" 
+                          className="w-full pl-14 pr-6 py-5 bg-gray-50 border-2 border-transparent focus:border-primary focus:bg-white rounded-[1.5rem] outline-none font-black text-primary transition-all" 
+                          value={formData.password} 
+                          onChange={(e) => setFormData({...formData, password: e.target.value})} 
+                        />
+                      </div>
                     </div>
                   </div>
-                  <div className="space-y-6">
+                  <div className="space-y-8">
                     <div>
-                      <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2">ID Contador</label>
-                      <input type="text" required className="w-full px-5 py-4 bg-gray-50 border-2 border-transparent focus:border-secondary focus:bg-white rounded-2xl outline-none font-bold text-sm" value={formData.meterId} onChange={(e) => setFormData({...formData, meterId: e.target.value})} />
+                      <label className="block text-[11px] font-black text-gray-400 uppercase tracking-widest mb-3 px-2">Número de Série do Contador</label>
+                      <input type="text" required placeholder="Ex: CNT-999" className="w-full px-6 py-5 bg-gray-50 border-2 border-transparent focus:border-secondary focus:bg-white rounded-[1.5rem] outline-none font-bold text-gray-700 transition-all" value={formData.meterId} onChange={(e) => setFormData({...formData, meterId: e.target.value})} />
                     </div>
                     <div>
-                      <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-2">Telefone</label>
-                      <input type="text" required className="w-full px-5 py-4 bg-gray-50 border-2 border-transparent focus:border-secondary focus:bg-white rounded-2xl outline-none font-bold text-sm" value={formData.phoneNumber} onChange={(e) => setFormData({...formData, phoneNumber: e.target.value})} />
+                      <label className="block text-[11px] font-black text-gray-400 uppercase tracking-widest mb-3 px-2">Telefone de Contacto</label>
+                      <input type="text" required placeholder="84 000 0000" className="w-full px-6 py-5 bg-gray-50 border-2 border-transparent focus:border-secondary focus:bg-white rounded-[1.5rem] outline-none font-bold text-gray-700 transition-all" value={formData.phoneNumber} onChange={(e) => setFormData({...formData, phoneNumber: e.target.value})} />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-black text-gray-400 uppercase tracking-widest mb-3 px-2">Referência / Localização Manual</label>
+                      <textarea rows={2} required className="w-full px-6 py-5 bg-gray-50 border-2 border-transparent focus:border-secondary focus:bg-white rounded-[1.5rem] outline-none font-bold text-gray-700 transition-all resize-none" placeholder="Perto da paragem..." value={formData.reference} onChange={(e) => setFormData({...formData, reference: e.target.value})}></textarea>
                     </div>
                   </div>
                 </div>
               </div>
-              <div className="p-6 sm:p-10 bg-gray-50 flex flex-col sm:flex-row justify-end items-center gap-3 sm:gap-4 shrink-0 border-t">
-                <button type="button" onClick={() => setShowModal(false)} className="w-full sm:w-auto px-8 py-4 font-black text-gray-400 uppercase tracking-widest text-[10px]">CANCELAR</button>
-                <button type="submit" className="w-full sm:w-auto bg-primary text-white px-12 py-4 rounded-2xl font-black shadow-xl uppercase tracking-widest text-[10px]">GUARDAR DADOS</button>
+              
+              <div className="p-8 sm:p-12 bg-gray-50 flex flex-col sm:flex-row justify-end items-center gap-4 shrink-0 border-t rounded-b-[2.7rem]">
+                <button type="button" onClick={() => setShowModal(false)} className="w-full sm:w-auto px-10 py-5 font-black text-gray-400 uppercase tracking-widest text-[10px] hover:text-gray-600 transition-colors">CANCELAR</button>
+                <button type="submit" className="w-full sm:w-auto bg-primary text-white px-16 py-5 rounded-[1.5rem] font-black shadow-2xl shadow-orange-200 hover:scale-105 active:scale-95 transition-all uppercase tracking-widest text-[11px]">
+                  {isEditing ? 'ACTUALIZAR REGISTO' : 'EFECTUAR CADASTRO'}
+                </button>
               </div>
             </form>
           </div>
